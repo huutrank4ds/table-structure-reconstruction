@@ -16,22 +16,24 @@ class DetectionConfig:
     canny_high: int = 150
     blur_kernel: int = 3
     min_length: int = 60
-    max_gap: int = 12
+    max_gap: int = 10
     hough_votes: int = 35
     angle_tolerance: float = 7.0
     merge_gap: int = 10
     axis_tolerance: int = 3
-    support_tolerance: int = 2
+    keep_ratio_length: float = 0.8
 
     def __post_init__(self):
         if not 0 <= self.canny_low < self.canny_high <= 255:
             raise ValueError('Expected 0 <= canny_low < canny_high <= 255')
         if self.blur_kernel < 1 or self.blur_kernel % 2 != 1:
             raise ValueError('blur_kernel must be a positive odd integer')
-        if min(self.min_length, self.hough_votes) < 1 or min(self.max_gap, self.merge_gap, self.axis_tolerance, self.support_tolerance) < 0:
+        if min(self.min_length, self.hough_votes) < 1 or min(self.max_gap, self.merge_gap, self.axis_tolerance) < 0:
             raise ValueError('Invalid line detection parameters')
         if not 0 <= self.angle_tolerance <= 45:
             raise ValueError('angle_tolerance must be in [0, 45]')
+        if not 0<= self.keep_ratio_length <= 1:
+            raise ValueError('keep_ratio_length must be in [0, 1]')
 
 class HoughCannyLineDetectionService:
     def __init__(self, config: DetectionConfig | None = None,
@@ -40,25 +42,17 @@ class HoughCannyLineDetectionService:
         self.preprocessor = ImagePreprocessor(preprocess_config)
 
 
-    @staticmethod
-    def _support_score(edges: np.ndarray, line: Line, tolerance: int) -> float:
-        """Fraction of positions along segment with at least one Canny pixel +/- tolerance.
+    def _validate_line_by_length(self, lines: list[Line], keep_ratio_length: float = 0.8) -> list[Line]:
+        if not 0 <= keep_ratio_length <= 1:
+            raise ValueError("keep_ratio_length must be between 0 and 1")
+        if not lines:
+            return []
 
-        For merged segments this measures actual edge evidence (gaps reduce score).
-        It is not a calibrated probability or model-provided confidence.
-        """
-        h, w = edges.shape
-        if line.orientation == 'horizontal':
-            indices = np.arange(line.x1, line.x2 + 1)
-            if indices.size == 0: return 0.0
-            y0, y1 = max(0, line.y1 - tolerance), min(h, line.y1 + tolerance + 1)
-            hits = np.any(edges[y0:y1, indices] > 0, axis=0)
-        else:
-            indices = np.arange(line.y1, line.y2 + 1)
-            if indices.size == 0: return 0.0
-            x0, x1 = max(0, line.x1 - tolerance), min(w, line.x1 + tolerance + 1)
-            hits = np.any(edges[indices, x0:x1] > 0, axis=1)
-        return round(float(hits.mean()), 4)
+        if keep_ratio_length == 0:
+            return lines
+
+        min_length = max(line.length for line in lines) * keep_ratio_length
+        return [line for line in lines if line.length >= min_length]
 
 
     def _detect_line(self, edges: np.ndarray) -> list[Line]:
@@ -192,16 +186,20 @@ class HoughCannyLineDetectionService:
         # Detect once, then merge
         raw_lines = self._detect_line(edges)
         merged_lines = self._merge_line(raw_lines)
+        keep_lines = []
+        if cfg.keep_ratio_length > 0:
+            keep_lines = self._validate_line_by_length(merged_lines, cfg.keep_ratio_length)
 
         # Restore coordinates to original image resolution
         raw_lines = [self._to_original_line(line, preprocessing) for line in raw_lines]
         merged_lines = [self._to_original_line(line, preprocessing) for line in merged_lines]
-
+        
         result = {
             "image": preprocessing["original"],
             "preprocessing": preprocessing,
             "raw_hough": line_set(raw_lines, cfg.angle_tolerance),
             "merged_hough": line_set(merged_lines, cfg.angle_tolerance),
+            "valid_length_hough": line_set(keep_lines),
             "parameters": asdict(cfg),
             "runtime_ms": round((time.perf_counter() - start) * 1000, 3),
         }
