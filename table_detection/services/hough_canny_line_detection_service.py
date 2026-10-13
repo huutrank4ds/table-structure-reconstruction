@@ -206,6 +206,7 @@ class HoughCannyLineDetectionService:
         # Restore coordinates to original image resolution
         raw_lines = [self._to_original_line(line, preprocessing) for line in raw_lines]
         merged_lines = [self._to_original_line(line, preprocessing) for line in merged_lines]
+        keep_lines = [self._to_original_line(line, preprocessing) for line in keep_lines]
         
         result = {
             "image": preprocessing["original"],
