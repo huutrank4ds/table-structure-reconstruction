@@ -102,22 +102,26 @@ class OrientationLine:
         )
 
 
-
-def summary(lines: list[Line]) -> dict:
+def summary(lines: list[Line], angle_tolerance: float = 5.0) -> dict:
     result = {}
-    for direction in ('horizontal', 'vertical'):
-        subset = [line for line in lines if line.to_orientation_line().orientation == direction]
+
+    for direction in ("horizontal", "vertical"):
+        subset = [
+            line for line in lines
+            if (oriented := line.to_orientation_line(angle_tolerance)) is not None
+            and oriented.orientation == direction
+        ]
         result[direction] = {
-            'count': len(subset),
-            'max_length_px': round(max((line.length for line in subset), default=0.0), 3)
+            "count": len(subset),
+            "max_length_px": round(max((line.length for line in subset), default=0.0), 3)
         }
+
     return result
 
 
-def line_set(lines: list[Line]) -> dict:
-    """Identical schema for Hough and filtered output."""
+def line_set(lines: list[Line], angle_tolerance: float = 5.0) -> dict:
     return {
-        'count': len(lines),
-        'by_orientation': summary(lines),
-        'lines': [line.to_dict() for line in lines],
+        "count": len(lines),
+        "by_orientation": summary(lines, angle_tolerance),
+        "lines": [line.to_dict() for line in lines],
     }

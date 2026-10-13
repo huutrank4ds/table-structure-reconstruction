@@ -200,8 +200,8 @@ class HoughCannyLineDetectionService:
         result = {
             "image": preprocessing["original"],
             "preprocessing": preprocessing,
-            "raw_hough": line_set(raw_lines),
-            "merged_hough": line_set(merged_lines),
+            "raw_hough": line_set(raw_lines, cfg.angle_tolerance),
+            "merged_hough": line_set(merged_lines, cfg.angle_tolerance),
             "parameters": asdict(cfg),
             "runtime_ms": round((time.perf_counter() - start) * 1000, 3),
         }
