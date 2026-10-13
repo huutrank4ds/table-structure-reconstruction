@@ -7,9 +7,7 @@ import cv2
 import numpy as np
 
 from table_detection.schemas.geometry import Line, OrientationLine, line_set
-from table_detection.services.image_preprocessor import ImagePreprocessor, PreprocessConfig
-from table_detection.services.filters import LineFilter, LengthRatioFilter
-from table_detection.services.custom_filter import CustomCodeFilter
+from table_detection.services.image_processor import ImagePreprocessor, PreprocessConfig
 
 
 @dataclass(frozen=True)
@@ -36,13 +34,11 @@ class DetectionConfig:
             raise ValueError('angle_tolerance must be in [0, 45]')
 
 class HoughCannyLineDetectionService:
-    def __init__(self, config: DetectionConfig | None = None, line_filter: LineFilter | None = None,
-                 preprocess_config: PreprocessConfig | None = None,
-                 post_filter: CustomCodeFilter | None = None):
+    def __init__(self, config: DetectionConfig | None = None,
+                 preprocess_config: PreprocessConfig | None = None):
         self.config = config or DetectionConfig()
-        self.line_filter = line_filter if line_filter is not None else LengthRatioFilter(0.8)
         self.preprocessor = ImagePreprocessor(preprocess_config)
-        self.post_filter = post_filter
+
 
     @staticmethod
     def _support_score(edges: np.ndarray, line: Line, tolerance: int) -> float:
@@ -180,6 +176,7 @@ class HoughCannyLineDetectionService:
         if image_rgb.size == 0 or image_rgb.dtype != np.uint8:
             raise ValueError("Expected non-empty uint8 image")
 
+        start = time.perf_counter()
         normalized, preprocessing = self.preprocessor.process(image_rgb)
         cfg = self.config
 
@@ -190,40 +187,15 @@ class HoughCannyLineDetectionService:
             gray = cv2.cvtColor(normalized, code)
 
         processed = cv2.GaussianBlur(gray, (cfg.blur_kernel, cfg.blur_kernel), 0) if cfg.blur_kernel > 1 else gray
-
-        start = time.perf_counter()
         edges = cv2.Canny(processed, cfg.canny_low, cfg.canny_high, L2gradient=True)
 
         detected_lines = self._detect_and_merge(edges)
-        raw_lines = [self._to_original_line(line, preprocessing) for line in detected_lines]
-
-        base_filtered = self.line_filter.apply(raw_lines)
-        if any(line is not original for line in base_filtered for original in []):
-            pass  # Placeholder: use identity membership check below
-
-        available_ids = {id(line) for line in raw_lines}
-        if any(id(line) not in available_ids for line in base_filtered):
-            raise ValueError("Base filter must only select existing Line instances")
-
-        filtered_lines = self.post_filter.apply(base_filtered) if self.post_filter is not None else list(base_filtered)
-        base_ids = {id(line) for line in base_filtered}
-        if any(id(line) not in base_ids for line in filtered_lines):
-            raise ValueError("Post-filter must only select existing Line instances")
+        lines = [self._to_original_line(line, preprocessing) for line in detected_lines]
 
         result = {
             "image": preprocessing["original"],
             "preprocessing": preprocessing,
-            "hough": line_set(raw_lines),
-            "base_filtered": line_set(base_filtered),
-            "filtered": line_set(filtered_lines),
-            "filter": {
-                "name": type(self.line_filter).__name__,
-                "ratio": getattr(self.line_filter, "ratio", None),
-            },
-            "post_filter": {
-                "enabled": self.post_filter is not None,
-                "name": type(self.post_filter).__name__ if self.post_filter is not None else None,
-            },
+            "hough": line_set(lines),
             "parameters": asdict(cfg),
             "runtime_ms": round((time.perf_counter() - start) * 1000, 3),
         }
