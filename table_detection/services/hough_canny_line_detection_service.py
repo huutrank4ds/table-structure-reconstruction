@@ -45,14 +45,25 @@ class HoughCannyLineDetectionService:
     def _validate_line_by_length(self, lines: list[Line], keep_ratio_length: float = 0.8) -> list[Line]:
         if not 0 <= keep_ratio_length <= 1:
             raise ValueError("keep_ratio_length must be between 0 and 1")
-        if not lines:
-            return []
-
-        if keep_ratio_length == 0:
+        if not lines or keep_ratio_length == 0:
             return lines
 
-        min_length = max(line.length for line in lines) * keep_ratio_length
-        return [line for line in lines if line.length >= min_length]
+        normalized = [
+            oriented for line in lines
+            if (oriented := line.to_orientation_line(self.config.angle_tolerance)) is not None
+        ]
+
+        output: list[Line] = []
+
+        for orientation in ("horizontal", "vertical"):
+            segments = [line for line in normalized if line.orientation == orientation]
+            if not segments:
+                continue
+
+            min_length = max(line.length for line in segments) * keep_ratio_length
+            output.extend(line.to_line() for line in segments if line.length >= min_length)
+
+        return sorted(output, key=lambda line: (line.y1, line.x1))
 
 
     def _detect_line(self, edges: np.ndarray) -> list[Line]:
