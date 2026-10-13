@@ -106,11 +106,10 @@ class OrientationLine:
 def summary(lines: list[Line]) -> dict:
     result = {}
     for direction in ('horizontal', 'vertical'):
-        subset = [line for line in lines if line.orientation == direction]
+        subset = [line for line in lines if line.to_orientation_line().orientation == direction]
         result[direction] = {
             'count': len(subset),
-            'max_length_px': round(max((line.length_px for line in subset), default=0.0), 3),
-            'mean_confidence': round(sum(line.confidence for line in subset) / len(subset), 4) if subset else None,
+            'max_length_px': round(max((line.length for line in subset), default=0.0), 3)
         }
     return result
 
