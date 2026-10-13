@@ -22,6 +22,7 @@ class DetectionConfig:
     merge_gap: int = 10
     axis_tolerance: int = 3
     keep_ratio_length: float = 0.8
+    length_power: float = 2.0
 
     def __post_init__(self):
         if not 0 <= self.canny_low < self.canny_high <= 255:
@@ -34,6 +35,8 @@ class DetectionConfig:
             raise ValueError('angle_tolerance must be in [0, 45]')
         if not 0<= self.keep_ratio_length <= 1:
             raise ValueError('keep_ratio_length must be in [0, 1]')
+        if self.length_power < 0:
+            raise ValueError("length_power must be non-negative")
 
 class HoughCannyLineDetectionService:
     def __init__(self, config: DetectionConfig | None = None,
@@ -82,6 +85,7 @@ class HoughCannyLineDetectionService:
  
     def _merge_line(self, lines: list[Line]) -> list[Line]:
         cfg = self.config
+        length_power = 2.0
 
         normalized = [
             converted for line in lines
@@ -98,12 +102,11 @@ class HoughCannyLineDetectionService:
             groups: list[dict] = []
 
             for line in segments:
-                weight = max(line.length, 1)
+                weight = max(line.length, 1) ** length_power
                 compatible = [
                     g for g in groups
                     if abs(g["axis"] - line.axis) <= cfg.axis_tolerance
-                    and line.start <= g["end"] + cfg.merge_gap
-                    and line.end >= g["start"] - cfg.merge_gap
+                    and max(g["start"], line.start) <= min(g["end"], line.end) + cfg.merge_gap
                 ]
 
                 if compatible:
@@ -123,6 +126,7 @@ class HoughCannyLineDetectionService:
             changed = True
             while changed:
                 changed = False
+
                 for i in range(len(groups)):
                     if changed:
                         break
@@ -132,7 +136,7 @@ class HoughCannyLineDetectionService:
 
                         if abs(a["axis"] - b["axis"]) > cfg.axis_tolerance:
                             continue
-                        if a["start"] > b["end"] + cfg.merge_gap or b["start"] > a["end"] + cfg.merge_gap:
+                        if max(a["start"], b["start"]) > min(a["end"], b["end"]) + cfg.merge_gap:
                             continue
 
                         a["sum"] += b["sum"]
@@ -140,17 +144,15 @@ class HoughCannyLineDetectionService:
                         a["axis"] = a["sum"] / a["weight"]
                         a["start"] = min(a["start"], b["start"])
                         a["end"] = max(a["end"], b["end"])
+
                         groups.pop(j)
                         changed = True
                         break
 
             for g in groups:
                 merged = OrientationLine(
-                    id=g["id"],
-                    orientation=orientation,
-                    axis=round(g["axis"]),
-                    start=g["start"],
-                    end=g["end"]
+                    id=g["id"], orientation=orientation,
+                    axis=round(g["axis"]), start=g["start"], end=g["end"]
                 )
 
                 if merged.length >= cfg.min_length:
