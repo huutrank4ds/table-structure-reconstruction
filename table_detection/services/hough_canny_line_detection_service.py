@@ -154,20 +154,6 @@ class HoughCannyLineDetectionService:
         return sorted(output, key=lambda line: (line.y1, line.x1))
 
 
-    def _to_original_line(self, line: Line, preprocessing: dict) -> Line:
-        original = preprocessing["original"]
-        sx, sy = preprocessing["scale_x"], preprocessing["scale_y"]
-        width, height = original["width"], original["height"]
-
-        return replace(
-            line,
-            x1=int(np.clip(round(line.x1 / sx), 0, width - 1)),
-            y1=int(np.clip(round(line.y1 / sy), 0, height - 1)),
-            x2=int(np.clip(round(line.x2 / sx), 0, width - 1)),
-            y2=int(np.clip(round(line.y2 / sy), 0, height - 1)),
-        )
-
-
     def process(self, image_rgb: np.ndarray) -> tuple[dict, np.ndarray]:
         if not isinstance(image_rgb, np.ndarray) or image_rgb.ndim not in (2, 3):
             raise ValueError("Expected grayscale or RGB numpy image")
@@ -189,13 +175,19 @@ class HoughCannyLineDetectionService:
         processed = cv2.GaussianBlur(gray, (cfg.blur_kernel, cfg.blur_kernel), 0) if cfg.blur_kernel > 1 else gray
         edges = cv2.Canny(processed, cfg.canny_low, cfg.canny_high, L2gradient=True)
 
-        detected_lines = self._detect_and_merge(edges)
-        lines = [self._to_original_line(line, preprocessing) for line in detected_lines]
+        # Detect once, then merge
+        raw_lines = self._detect_line(edges)
+        merged_lines = self._merge_line(raw_lines)
+
+        # Restore coordinates to original image resolution
+        raw_lines = [self._to_original_line(line, preprocessing) for line in raw_lines]
+        merged_lines = [self._to_original_line(line, preprocessing) for line in merged_lines]
 
         result = {
             "image": preprocessing["original"],
             "preprocessing": preprocessing,
-            "hough": line_set(lines),
+            "raw_hough": line_set(raw_lines),
+            "merged_hough": line_set(merged_lines),
             "parameters": asdict(cfg),
             "runtime_ms": round((time.perf_counter() - start) * 1000, 3),
         }
