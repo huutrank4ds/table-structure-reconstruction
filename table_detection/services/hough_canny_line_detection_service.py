@@ -154,6 +154,20 @@ class HoughCannyLineDetectionService:
         return sorted(output, key=lambda line: (line.y1, line.x1))
 
 
+    def _to_original_line(self, line: Line, preprocessing: dict) -> Line:
+        original = preprocessing["original"]
+        sx, sy = preprocessing["scale_x"], preprocessing["scale_y"]
+        width, height = original["width"], original["height"]
+
+        return replace(
+            line,
+            x1=int(np.clip(round(line.x1 / sx), 0, width - 1)),
+            y1=int(np.clip(round(line.y1 / sy), 0, height - 1)),
+            x2=int(np.clip(round(line.x2 / sx), 0, width - 1)),
+            y2=int(np.clip(round(line.y2 / sy), 0, height - 1)),
+        )
+
+
     def process(self, image_rgb: np.ndarray) -> tuple[dict, np.ndarray]:
         if not isinstance(image_rgb, np.ndarray) or image_rgb.ndim not in (2, 3):
             raise ValueError("Expected grayscale or RGB numpy image")
