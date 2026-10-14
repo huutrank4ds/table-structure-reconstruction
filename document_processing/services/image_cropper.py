@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 import math
 from pathlib import Path
-from typing import Any, Sequence, TypeAlias
+from typing import Any, Sequence
 
 import cv2
 import numpy as np
@@ -13,8 +13,8 @@ from document_processing.schemas.crop import CroppedImage
 from layout_ocr_detection.schemas.layout_config import LayoutComponentConfig
 
 
-ImageSource: TypeAlias = str | Path | np.ndarray
-BBox: TypeAlias = Sequence[float]
+type ImageSource = str | Path | np.ndarray
+type BBox = Sequence[float]
 
 
 class ImageCropper:
