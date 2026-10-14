@@ -15,10 +15,15 @@ class LayoutDetectionServices:
     def _init_pipeline(self, layout_model_name=None):
         if layout_model_name is None:
             layout_model_name = "PP-DocLayout_plus-L"
+        if self.device == 'cpu':
+            enable_mkldnn = False
+        else:
+            enable_mkldnn = True
         self.layout_detector = LayoutDetection(
             model_name=layout_model_name,
             device=self.device,
-        )
+            enable_mkldnn=enable_mkldnn
+        )       
 
 
     def get_predicted_layout(self, images: str | np.ndarray | list[str | np.ndarray]) -> list[LayoutFileConfig]:
