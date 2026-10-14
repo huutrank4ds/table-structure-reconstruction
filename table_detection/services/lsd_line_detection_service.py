@@ -1,14 +1,20 @@
+
+"""Detect table line segments using OpenCV LSD."""
+
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 import cv2
 import numpy as np
 
-from table_detection.schemas.geometry import Line, line_set
+from document_processing.schemas.image import ImageData
+from table_detection.schemas.geometry import Line
+from table_detection.schemas.detection import LineDetectionResult
 
-type ImageSource = str | Path | np.ndarray
+
+type ImageInput = ImageData | np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,46 +24,105 @@ class LSDConfig:
     refine: int = cv2.LSD_REFINE_STD
 
     def __post_init__(self) -> None:
-        if self.min_length <= 0 or not 0 <= self.angle_tolerance < 45:
-            raise ValueError('Invalid LSD configuration')
-        if self.refine not in (cv2.LSD_REFINE_NONE, cv2.LSD_REFINE_STD, cv2.LSD_REFINE_ADV):
-            raise ValueError('Invalid LSD refinement mode')
+        if self.min_length <= 0:
+            raise ValueError("min_length must be positive")
+
+        if not 0 <= self.angle_tolerance < 45:
+            raise ValueError("angle_tolerance must be in [0, 45)")
+
+        if self.refine not in (
+            cv2.LSD_REFINE_NONE,
+            cv2.LSD_REFINE_STD,
+            cv2.LSD_REFINE_ADV,
+        ):
+            raise ValueError("Invalid LSD refinement mode")
 
 
 class LSDLineDetectionService:
-    def __init__(self, config: LSDConfig | None = None):
+    def __init__(
+        self,
+        config: LSDConfig | None = None,
+    ) -> None:
         self.config = config or LSDConfig()
-        self.detector = cv2.createLineSegmentDetector(self.config.refine)
+
+        self.detector = cv2.createLineSegmentDetector(
+            self.config.refine
+        )
 
     @staticmethod
-    def _read(source: ImageSource) -> np.ndarray:
-        if isinstance(source, np.ndarray):
-            image = source
-            if image.dtype != np.uint8 or image.size == 0:
-                raise ValueError('Expected non-empty uint8 image')
-            if image.ndim == 2:
-                return image
-            if image.ndim == 3 and image.shape[2] in (3, 4):
-                return cv2.cvtColor(image, cv2.COLOR_RGBA2GRAY if image.shape[2] == 4 else cv2.COLOR_RGB2GRAY)
-            raise ValueError('Expected grayscale, RGB, or RGBA image')
-        data = np.fromfile(str(source), dtype=np.uint8)
-        image = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
-        if image is None:
-            raise ValueError(f'Cannot decode image: {source}')
+    def _get_image(source: ImageInput) -> np.ndarray:
+        image = (
+            source.image
+            if isinstance(source, ImageData)
+            else source
+        )
+
+        if not isinstance(image, np.ndarray):
+            raise TypeError(
+                "Expected ImageData or numpy.ndarray"
+            )
+
+        if (
+            image.dtype != np.uint8
+            or image.ndim != 3
+            or image.shape[2] != 3
+            or image.size == 0
+        ):
+            raise ValueError(
+                "Expected non-empty RGB uint8 image "
+                "with shape (H, W, 3)"
+            )
+
         return image
 
-    def process(self, source: ImageSource) -> dict:
-        gray = self._read(source)
+    def _detect_lines(self, gray: np.ndarray) -> list[Line]:
         detected, _, _, _ = self.detector.detect(gray)
+
+        if detected is None:
+            return []
+
+        cfg = self.config
         lines: list[Line] = []
-        if detected is not None:
-            for x1, y1, x2, y2 in detected.reshape(-1, 4):
-                candidate = Line(len(lines), int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
-                if candidate.length < self.config.min_length:
-                    continue
-                oriented = candidate.to_orientation_line(self.config.angle_tolerance)
-                if oriented is None:
-                    continue
-                lines.append(candidate)
-        return {'method': 'lsd', 'image_size': [gray.shape[1], gray.shape[0]],
-                'parameters': asdict(self.config), **line_set(lines, self.config.angle_tolerance)}
+
+        for x1, y1, x2, y2 in detected.reshape(-1, 4):
+            candidate = Line(
+                id=len(lines),
+                x1=round(float(x1)),
+                y1=round(float(y1)),
+                x2=round(float(x2)),
+                y2=round(float(y2)),
+            )
+
+            if candidate.length < cfg.min_length:
+                continue
+
+            if candidate.to_orientation_line(
+                cfg.angle_tolerance
+            ) is None:
+                continue
+
+            lines.append(candidate)
+
+        return lines
+
+    def process(self, source: ImageInput) -> LineDetectionResult:
+        start = time.perf_counter()
+
+        image = self._get_image(source)
+
+        gray = cv2.cvtColor(
+            image,
+            cv2.COLOR_RGB2GRAY,
+        )
+
+        lines = self._detect_lines(gray)
+
+        return LineDetectionResult(
+            method="lsd",
+            lines=lines,
+            runtime_ms=round(
+                (time.perf_counter() - start) * 1000,
+                3,
+            ),
+            parameters=asdict(self.config),
+        )

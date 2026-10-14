@@ -1,129 +1,170 @@
-"""Image-only Canny -> HoughLinesP -> merge -> replaceable filter."""
+
+"""Detect and merge table lines using Canny and HoughLinesP."""
+
 from __future__ import annotations
-from dataclasses import dataclass, asdict, replace
-import math
+
 import time
+from dataclasses import asdict, dataclass
+from typing import Any
+
 import cv2
 import numpy as np
 
-from table_detection.schemas.geometry import Line, OrientationLine, line_set
-from table_detection.services.image_processor import ImagePreprocessor, PreprocessConfig
+from document_processing.schemas.image import ImageData
+from table_detection.schemas.geometry import Line, OrientationLine
+from table_detection.schemas.detection import LineDetectionResult
 
 
-@dataclass(frozen=True)
+type ImageInput = ImageData | np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
 class DetectionConfig:
     canny_low: int = 50
     canny_high: int = 150
     blur_kernel: int = 3
+
     min_length: int = 60
     max_gap: int = 10
     hough_votes: int = 35
+
     angle_tolerance: float = 7.0
-    merge_gap: int = 10
     axis_tolerance: int = 3
-    keep_ratio_length: float = 0.8
+    merge_gap: int = 10
     length_power: float = 2.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not 0 <= self.canny_low < self.canny_high <= 255:
-            raise ValueError('Expected 0 <= canny_low < canny_high <= 255')
-        if self.blur_kernel < 1 or self.blur_kernel % 2 != 1:
-            raise ValueError('blur_kernel must be a positive odd integer')
-        if min(self.min_length, self.hough_votes) < 1 or min(self.max_gap, self.merge_gap, self.axis_tolerance) < 0:
-            raise ValueError('Invalid line detection parameters')
-        if not 0 <= self.angle_tolerance <= 45:
-            raise ValueError('angle_tolerance must be in [0, 45]')
-        if not 0<= self.keep_ratio_length <= 1:
-            raise ValueError('keep_ratio_length must be in [0, 1]')
+            raise ValueError(
+                "Expected 0 <= canny_low < canny_high <= 255"
+            )
+
+        if self.blur_kernel < 1 or self.blur_kernel % 2 == 0:
+            raise ValueError(
+                "blur_kernel must be a positive odd integer"
+            )
+
+        if self.min_length < 1 or self.hough_votes < 1:
+            raise ValueError(
+                "min_length and hough_votes must be positive"
+            )
+
+        if min(self.max_gap, self.merge_gap, self.axis_tolerance) < 0:
+            raise ValueError(
+                "Gap and axis tolerance must be non-negative"
+            )
+
+        if not 0 <= self.angle_tolerance < 45:
+            raise ValueError(
+                "angle_tolerance must be in [0, 45)"
+            )
+
         if self.length_power < 0:
-            raise ValueError("length_power must be non-negative")
+            raise ValueError(
+                "length_power must be non-negative"
+            )
+
 
 class HoughCannyLineDetectionService:
-    def __init__(self, config: DetectionConfig | None = None,
-                 preprocess_config: PreprocessConfig | None = None):
+    def __init__(
+        self,
+        config: DetectionConfig | None = None,
+    ) -> None:
         self.config = config or DetectionConfig()
-        self.preprocessor = ImagePreprocessor(preprocess_config)
 
+    @staticmethod
+    def _get_image(source: ImageInput) -> np.ndarray:
+        image = (
+            source.image
+            if isinstance(source, ImageData)
+            else source
+        )
 
-    def _validate_line_by_length(self, lines: list[Line], keep_ratio_length: float = 0.8) -> list[Line]:
-        if not 0 <= keep_ratio_length <= 1:
-            raise ValueError("keep_ratio_length must be between 0 and 1")
-        if not lines or keep_ratio_length == 0:
-            return lines
+        if not isinstance(image, np.ndarray):
+            raise TypeError(
+                "Expected ImageData or numpy.ndarray"
+            )
 
-        normalized = [
-            oriented for line in lines
-            if (oriented := line.to_orientation_line(self.config.angle_tolerance)) is not None
-        ]
+        if (
+            image.dtype != np.uint8
+            or image.ndim != 3
+            or image.shape[2] != 3
+            or image.size == 0
+        ):
+            raise ValueError(
+                "Expected non-empty RGB uint8 image "
+                "with shape (H, W, 3)"
+            )
 
-        output: list[Line] = []
+        return image
 
-        for orientation in ("horizontal", "vertical"):
-            segments = [line for line in normalized if line.orientation == orientation]
-            if not segments:
-                continue
-
-            min_length = max(line.length for line in segments) * keep_ratio_length
-            output.extend(line.to_line() for line in segments if line.length >= min_length)
-
-        return sorted(output, key=lambda line: (line.y1, line.x1))
-
-
-    def _detect_line(self, edges: np.ndarray) -> list[Line]:
+    def _detect_lines(self, edges: np.ndarray) -> list[Line]:
         cfg = self.config
-        raw = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=cfg.hough_votes,
-                              minLineLength=cfg.min_length, maxLineGap=cfg.max_gap)
-        if raw is None:
+
+        detected = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=cfg.hough_votes,
+            minLineLength=cfg.min_length,
+            maxLineGap=cfg.max_gap,
+        )
+
+        if detected is None:
             return []
-        
-        candidates: list[tuple[str, int, int, int]] = []
-        for x1, y1, x2, y2 in raw.reshape(-1, 4).tolist():
-            line = Line(len(candidates), x1, y1, x2, y2)
-            candidates.append(line)
-        return candidates
 
- 
-    def _merge_line(self, lines: list[Line]) -> list[Line]:
-        cfg = self.config
-        length_power = 2.0
-
-        normalized = [
-            converted for line in lines
-            if (converted := line.to_orientation_line(cfg.angle_tolerance)) is not None
+        return [
+            Line(
+                id=index,
+                x1=int(x1),
+                y1=int(y1),
+                x2=int(x2),
+                y2=int(y2),
+            )
+            for index, (x1, y1, x2, y2)
+            in enumerate(detected.reshape(-1, 4))
         ]
 
-        output: list[Line] = []
+    def _merge_lines(self, lines: list[Line]) -> list[Line]:
+        cfg = self.config
+
+        oriented = [
+            converted
+            for line in lines
+            if (
+                converted := line.to_orientation_line(
+                    cfg.angle_tolerance
+                )
+            ) is not None
+        ]
+
+        merged_lines: list[Line] = []
 
         for orientation in ("horizontal", "vertical"):
             segments = sorted(
-                (line for line in normalized if line.orientation == orientation),
-                key=lambda line: (line.axis, line.start)
+                (
+                    line
+                    for line in oriented
+                    if line.orientation == orientation
+                ),
+                key=lambda line: (line.axis, line.start),
             )
-            groups: list[dict] = []
+
+            groups: list[dict[str, Any]] = []
 
             for line in segments:
-                weight = max(line.length, 1) ** length_power
-                compatible = [
-                    g for g in groups
-                    if abs(g["axis"] - line.axis) <= cfg.axis_tolerance
-                    and max(g["start"], line.start) <= min(g["end"], line.end) + cfg.merge_gap
-                ]
+                weight = max(line.length, 1) ** cfg.length_power
 
-                if compatible:
-                    g = min(compatible, key=lambda g: abs(g["axis"] - line.axis))
-                    g["sum"] += line.axis * weight
-                    g["weight"] += weight
-                    g["axis"] = g["sum"] / g["weight"]
-                    g["start"] = min(g["start"], line.start)
-                    g["end"] = max(g["end"], line.end)
-                else:
-                    groups.append({
-                        "id": line.id, "axis": float(line.axis),
-                        "sum": line.axis * weight, "weight": weight,
-                        "start": line.start, "end": line.end
-                    })
+                groups.append({
+                    "axis_sum": line.axis * weight,
+                    "weight": weight,
+                    "start": line.start,
+                    "end": line.end,
+                })
 
+            # Merge groups until no compatible pairs remain.
             changed = True
+
             while changed:
                 changed = False
 
@@ -132,16 +173,23 @@ class HoughCannyLineDetectionService:
                         break
 
                     for j in range(i + 1, len(groups)):
-                        a, b = groups[i], groups[j]
+                        a = groups[i]
+                        b = groups[j]
 
-                        if abs(a["axis"] - b["axis"]) > cfg.axis_tolerance:
-                            continue
-                        if max(a["start"], b["start"]) > min(a["end"], b["end"]) + cfg.merge_gap:
+                        axis_a = a["axis_sum"] / a["weight"]
+                        axis_b = b["axis_sum"] / b["weight"]
+
+                        if abs(axis_a - axis_b) > cfg.axis_tolerance:
                             continue
 
-                        a["sum"] += b["sum"]
+                        if (
+                            max(a["start"], b["start"])
+                            > min(a["end"], b["end"]) + cfg.merge_gap
+                        ):
+                            continue
+
+                        a["axis_sum"] += b["axis_sum"]
                         a["weight"] += b["weight"]
-                        a["axis"] = a["sum"] / a["weight"]
                         a["start"] = min(a["start"], b["start"])
                         a["end"] = max(a["end"], b["end"])
 
@@ -149,73 +197,81 @@ class HoughCannyLineDetectionService:
                         changed = True
                         break
 
-            for g in groups:
+            for group in groups:
                 merged = OrientationLine(
-                    id=g["id"], orientation=orientation,
-                    axis=round(g["axis"]), start=g["start"], end=g["end"]
+                    id=len(merged_lines),
+                    orientation=orientation,
+                    axis=round(
+                        group["axis_sum"] / group["weight"]
+                    ),
+                    start=group["start"],
+                    end=group["end"],
                 )
 
-                if merged.length >= cfg.min_length:
-                    output.append(merged.to_line())
+                # No additional length filtering.
+                merged_lines.append(merged.to_line())
 
-        return sorted(output, key=lambda line: (line.y1, line.x1))
-
-
-    def _to_original_line(self, line: Line, preprocessing: dict) -> Line:
-        original = preprocessing["original"]
-        sx, sy = preprocessing["scale_x"], preprocessing["scale_y"]
-        width, height = original["width"], original["height"]
-
-        return replace(
-            line,
-            x1=int(np.clip(round(line.x1 / sx), 0, width - 1)),
-            y1=int(np.clip(round(line.y1 / sy), 0, height - 1)),
-            x2=int(np.clip(round(line.x2 / sx), 0, width - 1)),
-            y2=int(np.clip(round(line.y2 / sy), 0, height - 1)),
+        merged_lines.sort(
+            key=lambda line: (
+                line.y1,
+                line.x1,
+                line.y2,
+                line.x2,
+            )
         )
 
+        # Assign sequential IDs after sorting.
+        return [
+            Line(
+                id=index,
+                x1=line.x1,
+                y1=line.y1,
+                x2=line.x2,
+                y2=line.y2,
+            )
+            for index, line in enumerate(merged_lines)
+        ]
 
-    def process(self, image_rgb: np.ndarray) -> tuple[dict, np.ndarray]:
-        if not isinstance(image_rgb, np.ndarray) or image_rgb.ndim not in (2, 3):
-            raise ValueError("Expected grayscale or RGB numpy image")
-        if image_rgb.ndim == 3 and image_rgb.shape[2] not in (3, 4):
-            raise ValueError("Expected 3 or 4 channels")
-        if image_rgb.size == 0 or image_rgb.dtype != np.uint8:
-            raise ValueError("Expected non-empty uint8 image")
-
+    def process(self, source: ImageInput) -> LineDetectionResult:
         start = time.perf_counter()
-        normalized, preprocessing = self.preprocessor.process(image_rgb)
+
+        image = self._get_image(source)
         cfg = self.config
 
-        if normalized.ndim == 2:
-            gray = normalized
-        else:
-            code = cv2.COLOR_RGB2GRAY if normalized.shape[2] == 3 else cv2.COLOR_RGBA2GRAY
-            gray = cv2.cvtColor(normalized, code)
+        # RGB -> Grayscale
+        gray = cv2.cvtColor(
+            image,
+            cv2.COLOR_RGB2GRAY,
+        )
 
-        processed = cv2.GaussianBlur(gray, (cfg.blur_kernel, cfg.blur_kernel), 0) if cfg.blur_kernel > 1 else gray
-        edges = cv2.Canny(processed, cfg.canny_low, cfg.canny_high, L2gradient=True)
+        # Optional Gaussian Blur
+        if cfg.blur_kernel > 1:
+            gray = cv2.GaussianBlur(
+                gray,
+                (cfg.blur_kernel, cfg.blur_kernel),
+                0,
+            )
 
-        # Detect once, then merge
-        raw_lines = self._detect_line(edges)
-        merged_lines = self._merge_line(raw_lines)
-        keep_lines = []
-        if cfg.keep_ratio_length > 0:
-            keep_lines = self._validate_line_by_length(merged_lines, cfg.keep_ratio_length)
+        # Canny Edge Detection
+        edges = cv2.Canny(
+            gray,
+            cfg.canny_low,
+            cfg.canny_high,
+            L2gradient=True,
+        )
 
-        # Restore coordinates to original image resolution
-        raw_lines = [self._to_original_line(line, preprocessing) for line in raw_lines]
-        merged_lines = [self._to_original_line(line, preprocessing) for line in merged_lines]
-        keep_lines = [self._to_original_line(line, preprocessing) for line in keep_lines]
-        
-        result = {
-            "image": preprocessing["original"],
-            "preprocessing": preprocessing,
-            "raw_hough": line_set(raw_lines, cfg.angle_tolerance),
-            "merged_hough": line_set(merged_lines, cfg.angle_tolerance),
-            "valid_length_hough": line_set(keep_lines),
-            "parameters": asdict(cfg),
-            "runtime_ms": round((time.perf_counter() - start) * 1000, 3),
-        }
+        # Hough Detection and Line Merging
+        raw_lines = self._detect_lines(edges)
+        merged_lines = self._merge_lines(raw_lines)
 
-        return result, edges
+        return LineDetectionResult(
+            method="hough_canny",
+            lines=merged_lines,
+            raw_lines=raw_lines,
+            masks={"canny": edges},
+            runtime_ms=round(
+                (time.perf_counter() - start) * 1000,
+                3,
+            ),
+            parameters=asdict(cfg),
+        )

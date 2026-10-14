@@ -4,17 +4,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 
+from document_processing.schemas.image import ImageData
 
-@dataclass(frozen=True, slots=True)
-class RasterizedPage:
+@dataclass(frozen=False, slots=True)
+class RasterizedPage(ImageData):
     page_id: int
-    image: np.ndarray
     dpi: int
-    width: int
-    height: int
     pdf_width: float
     pdf_height: float
-    image_path: str | None = None
+
+    def __post_init__(self) -> None:
+        super(RasterizedPage, self).__post_init__()
+
+        if self.page_id < 0:
+            raise ValueError("page_id must be >= 0")
+
+        if self.dpi <= 0:
+            raise ValueError("dpi must be positive")
+
+        if self.pdf_width <= 0 or self.pdf_height <= 0:
+            raise ValueError("PDF dimensions must be positive")
 
     @property
     def scale_x(self) -> float:
@@ -34,15 +43,13 @@ class RasterizedPage:
 
     def to_dict(self) -> dict:
         return {
+            **super(RasterizedPage, self).to_dict(),
             "page_id": self.page_id,
             "dpi": self.dpi,
-            "width": self.width,
-            "height": self.height,
             "pdf_width": self.pdf_width,
             "pdf_height": self.pdf_height,
             "scale_x": self.scale_x,
             "scale_y": self.scale_y,
-            "image_path": self.image_path,
         }
 
 
