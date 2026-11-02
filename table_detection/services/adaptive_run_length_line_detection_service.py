@@ -174,8 +174,8 @@ class AdaptiveRunLengthLineDetectionService:
 
         # Return masks in the original image orientation.
         mask = run_mask if horizontal else run_mask.T.copy()
-
         return lines, mask
+
 
     def process(self, source: ImageInput) -> LineDetectionResult:
         start = time.perf_counter()
